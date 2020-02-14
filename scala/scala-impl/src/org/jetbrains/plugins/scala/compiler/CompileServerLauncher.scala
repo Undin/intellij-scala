@@ -31,6 +31,8 @@ object CompileServerLauncher {
   private var serverInstance: Option[ServerInstance] = None
   private val LOG = Logger.getInstance(getClass)
 
+  private val NailgunRunnerFQN = "org.jetbrains.plugins.scala.nailgun.NailgunRunner"
+
   private class Listener extends BuildManagerListener {
     override def beforeBuildProcessStarted(project: Project, sessionId: UUID): Unit = {
       startCompileServer(project)
@@ -95,7 +97,7 @@ object CompileServerLauncher {
     }
   }
 
-  private def compilerServerAddtionalCP(): Seq[File] = for {
+  private def compilerServerAdditionalCP(): Seq[File] = for {
     extension <- NailgunServerAdditionalCp.EP_NAME.getExtensions
     filesPath <- extension.getClasspath.split(";")
     pluginId: PluginId = extension.getPluginDescriptor.getPluginId
@@ -114,7 +116,7 @@ object CompileServerLauncher {
         val (nailgunCpFiles, classpathFiles) = presentFiles.partition(_.getName contains "nailgun")
         val nailgunClasspath = nailgunCpFiles
           .map(_.canonicalPath).mkString(File.pathSeparator)
-        val classpath = (jdk.tools ++ (classpathFiles ++ compilerServerAddtionalCP()))
+        val classpath = (jdk.tools ++ (classpathFiles ++ compilerServerAdditionalCP()))
           .map(_.canonicalPath).mkString(File.pathSeparator)
 
         val freePort = CompileServerLauncher.findFreePort
@@ -124,7 +126,6 @@ object CompileServerLauncher {
           saveSettings()
         }
 
-        val ngRunnerFqn = "org.jetbrains.plugins.scala.nailgun.NailgunRunner"
         val id = settings.COMPILE_SERVER_ID
 
         val shutdownDelay = settings.COMPILE_SERVER_SHUTDOWN_DELAY
@@ -134,8 +135,9 @@ object CompileServerLauncher {
 
         val extraJvmParameters = CompileServerVmOptionsProvider.implementations.flatMap(_.vmOptionsFor(project))
 
-        val commands = jdk.executable.canonicalPath +: "-cp" +: nailgunClasspath +: jvmParameters ++: shutdownDelayArg ++:
-          extraJvmParameters ++: ngRunnerFqn +: freePort.toString +: id.toString +: classpath +: Nil
+        val commands = jdk.executable.canonicalPath +:
+          "-cp" +: nailgunClasspath +: jvmParameters ++: shutdownDelayArg ++: extraJvmParameters ++:
+          NailgunRunnerFQN +: freePort.toString +: id.toString +: classpath +: Nil
 
         val builder = new ProcessBuilder(commands.asJava)
 
@@ -143,14 +145,15 @@ object CompileServerLauncher {
           projectHome(project).foreach(dir => builder.directory(dir))
         }
 
-        catching(classOf[IOException]).either(builder.start())
-                .left.map(_.getMessage)
-                .right.map { process =>
-          val watcher = new ProcessWatcher(process, "scalaCompileServer")
-          serverInstance = Some(ServerInstance(watcher, freePort, builder.directory(), jdk))
-          watcher.startNotify()
-          process
-        }
+        catching(classOf[IOException])
+          .either(builder.start())
+          .left.map(_.getMessage)
+          .map { process =>
+            val watcher = new ProcessWatcher(process, "scalaCompileServer")
+            serverInstance = Some(ServerInstance(watcher, freePort, builder.directory(), jdk))
+            watcher.startNotify()
+            process
+          }
       case (_, absentFiles) =>
         val paths = absentFiles.map(_.getPath).mkString(", ")
         Left("Required file(s) not found: " + paths)
